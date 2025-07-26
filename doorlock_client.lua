@@ -6,6 +6,7 @@ local doorgunActive = false
 local doorgunKeyType = nil
 local doorStates = {} -- [netId] = {locked=true/false, keyType="LEO_Key"}
 local removalMode = false
+local myPerms = {isAdmin=false, hasLEO=false, hasSAFD=false}
 
 -- Add chat suggestions on resource start
 AddEventHandler('onClientResourceStart', function(resourceName)
@@ -38,8 +39,19 @@ function DrawText3D(x, y, z, text, r, g, b)
 end
 
 -- Command registration for doorgun (admin only)
+RegisterNetEvent('doorgun:setPerms')
+AddEventHandler('doorgun:setPerms', function(perms)
+    myPerms = perms or myPerms
+    print("[Doorgun] Received perms from server", json.encode(myPerms))
+end)
+
+-- update command registration inside loop
 for _, keyType in ipairs({"leokey", "safdkey"}) do
     RegisterCommand("doorgun " .. keyType, function()
+        if not myPerms.isAdmin then
+            TriggerEvent('chat:addMessage', {args = {"You are not an admin."}})
+            return
+        end
         print("[Doorgun] /doorgun " .. keyType .. " command triggered")
         doorgunActive = true
         doorgunKeyType = keyType:upper() .. "_Key"
@@ -94,6 +106,9 @@ end)
 local function getNearbyDoor()
     local playerCoords = GetEntityCoords(PlayerPedId())
     for netId, data in pairs(doorStates) do
+        if (data.keyType == "LEO_Key" and not myPerms.hasLEO) or (data.keyType == "SAFD_Key" and not myPerms.hasSAFD) then
+            goto continue
+        end
         local entity = NetworkGetEntityFromNetworkId(netId)
         if entity and DoesEntityExist(entity) then
             local coords = GetEntityCoords(entity)
@@ -101,6 +116,7 @@ local function getNearbyDoor()
                 return netId, data, coords
             end
         end
+        ::continue::
     end
     return nil, nil, nil
 end

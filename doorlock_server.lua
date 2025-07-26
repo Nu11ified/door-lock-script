@@ -1,8 +1,7 @@
 -- Door Lock Server Script: Doorgun System with SQLite Persistence, Admin Check, and Best Practices
 -- DB backend: oxmysql
 
--- Use dofile to load config.lua in FiveM (require does not work for resource-local files)
-dofile(GetResourcePath(GetCurrentResourceName()) .. "/config.lua")
+-- config.lua is loaded via fxmanifest.lua server_scripts
 
 local doors = {} -- [netId] = {locked=true/false, keyType="LEO_Key", lastUnlocked=timestamp}
 local discordRateLimit = {} -- [discord_id] = retryAfterTimestamp
@@ -194,11 +193,70 @@ AddEventHandler('doorgun:removeDoor', function(netId)
     end)
 end)
 
--- Send all door states to new players
+local playerPerms = {} -- [src] = {isAdmin=bool, hasLEO=bool, hasSAFD=bool}
+
+-- Helper to fetch all roles once and set permissions
+local function fetchAndStorePerms(src, discord_id)
+    local now = os.time()
+    if discordRateLimit[discord_id] and discordRateLimit[discord_id] > now then
+        print("[Doorgun] Skipping perms fetch (rate limited) for", discord_id)
+        return
+    end
+    local url = ("https://discord.com/api/v10/guilds/%s/members/%s"):format(DISCORD_GUILD_ID, discord_id)
+    local headers = { ["Authorization"] = "Bot " .. DISCORD_BOT_TOKEN }
+    local status, body, hdrs = PerformHttpRequestAwait(url, 'GET', '', headers)
+    if status == 429 then
+        local retry = tonumber(hdrs and hdrs["Retry-After"] or 60) or 60
+        discordRateLimit[discord_id] = now + retry
+        print("[Doorgun] Rate limited while fetching perms for", discord_id)
+        return
+    end
+    if status ~= 200 then
+        print("[Doorgun] Failed to fetch perms for", discord_id, "status", status)
+        return
+    end
+    local data = json.decode(body)
+    if not data or not data.roles then return end
+    local roles = data.roles
+    local function hasAny(roleArray)
+        for _, r in ipairs(roles) do
+            for _, k in ipairs(roleArray) do
+                if r == k then return true end
+            end
+        end
+        return false
+    end
+    local perms = {
+        isAdmin = hasAny(ADMIN_ROLES),
+        hasLEO = hasAny(LEO_Key),
+        hasSAFD = hasAny(SAFD_Key)
+    }
+    playerPerms[src] = perms
+    print(string.format("[Doorgun] Player %s perms -> admin:%s LEO:%s SAFD:%s", GetPlayerName(src), tostring(perms.isAdmin), tostring(perms.hasLEO), tostring(perms.hasSAFD)))
+    TriggerClientEvent('doorgun:setPerms', src, perms)
+end
+
+-- Update playerConnecting handler
 AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
     local src = source
     sendAllDoorStates(src)
+    -- extract discord id
+    local discord_id
+    for _, id in ipairs(GetPlayerIdentifiers(src)) do
+        if id:find("discord:") then discord_id = id:gsub("discord:", "") break end
+    end
+    if discord_id then
+        fetchAndStorePerms(src, discord_id)
+    else
+        print("[Doorgun] Player", name, "has no discord identifier, no perms fetched")
+    end
 end)
+
+-- Clean up perms on drop
+AddEventHandler('playerDropped', function()
+    playerPerms[source] = nil
+end)
+
 
 AddEventHandler('playerSpawned', function()
     local src = source
