@@ -1,7 +1,8 @@
 -- Door Lock Server Script: Doorgun System with SQLite Persistence, Admin Check, and Best Practices
 -- DB backend: oxmysql
 
-require "config"
+-- Use dofile to load config.lua in FiveM (require does not work for resource-local files)
+dofile(GetResourcePath(GetCurrentResourceName()) .. "/config.lua")
 
 local doors = {} -- [netId] = {locked=true/false, keyType="LEO_Key", lastUnlocked=timestamp}
 local discordRateLimit = {} -- [discord_id] = retryAfterTimestamp
