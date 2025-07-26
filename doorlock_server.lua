@@ -61,41 +61,53 @@ end
 -- Discord role check wrapper with rate limit handling and error logging
 local function checkRoleWithRateLimit(discord_id, role_array, cb)
     local now = os.time()
+    print("[Doorgun] Starting Discord API check for user:", discord_id, "roles:", json.encode(role_array))
     if discordRateLimit[discord_id] and discordRateLimit[discord_id] > now then
-        print("[Doorgun] Discord API rate limited for user:", discord_id)
+        print("[Doorgun] Discord API rate limited for user:", discord_id, "until", discordRateLimit[discord_id], "(now:", now, ")")
         cb(false)
         return
     end
-    -- Use PerformHttpRequestAwait for blocking call
     local url = ("https://discord.com/api/v10/guilds/%s/members/%s"):format(DISCORD_GUILD_ID, discord_id)
     local headers = { ["Authorization"] = "Bot " .. DISCORD_BOT_TOKEN }
+    print("[Doorgun] Performing HTTP GET:", url)
     local errorCode, resultData, resultHeaders = PerformHttpRequestAwait(url, 'GET', '', headers)
+    print("[Doorgun] Discord API response for user:", discord_id, "status:", errorCode)
+    if type(resultHeaders) == "table" then
+        print("[Doorgun] Discord API headers:", json.encode(resultHeaders))
+    end
     if errorCode == 429 then
         local retryAfter = 60 -- default fallback
         if type(resultHeaders) == "table" and resultHeaders["Retry-After"] then
             retryAfter = tonumber(resultHeaders["Retry-After"]) or retryAfter
         end
         discordRateLimit[discord_id] = now + retryAfter
-        print("[Doorgun] Discord API 429 for user:", discord_id, "Retry after:", retryAfter)
+        print("[Doorgun] Discord API 429 for user:", discord_id, "Retry after:", retryAfter, "seconds (until", discordRateLimit[discord_id], ")")
         cb(false)
         return
     end
     if errorCode ~= 200 then
-        print("[Doorgun] Discord API error:", errorCode, resultData)
+        print("[Doorgun] Discord API error for user:", discord_id, "status:", errorCode, "body:", resultData)
         cb(false)
         return
     end
     local data = json.decode(resultData)
     if not data or not data.roles then
-        print("[Doorgun] Discord API: No roles found for user:", discord_id)
+        print("[Doorgun] Discord API: No roles found for user:", discord_id, "body:", resultData)
         cb(false)
         return
     end
+    local found = false
     for _, role in ipairs(data.roles) do
         for _, key in ipairs(role_array) do
-            if role == key then cb(true) return end
+            if role == key then
+                print("[Doorgun] Discord API: User", discord_id, "has required role:", role)
+                found = true
+                cb(true)
+                return
+            end
         end
     end
+    print("[Doorgun] Discord API: User", discord_id, "does NOT have any required role.")
     cb(false)
 end
 
@@ -190,4 +202,34 @@ end)
 AddEventHandler('playerSpawned', function()
     local src = source
     sendAllDoorStates(src)
+end) 
+
+-- User toggles door lock/unlock (must have correct key role, not admin)
+RegisterNetEvent('doorgun:toggleDoor')
+AddEventHandler('doorgun:toggleDoor', function(netId)
+    local src = source
+    local discord_id = nil
+    for _, id in ipairs(GetPlayerIdentifiers(src)) do
+        if id:find("discord:") then
+            discord_id = id:gsub("discord:", "")
+            break
+        end
+    end
+    if not discord_id then print("[Doorgun] No discord ID for user", src) return end
+    local door = doors[netId]
+    if not door then print("[Doorgun] No door found for netId", netId) return end
+    print("[Doorgun] User", discord_id, "attempting to toggle door", netId, "(keyType:", door.keyType, ")")
+    checkPlayerHasKey(discord_id, door.keyType, function(hasKey)
+        if not hasKey then print("[Doorgun] User", discord_id, "does not have required key role for door", netId) return end
+        door.locked = not door.locked
+        if door.locked then
+            exec("UPDATE doors SET locked = 1 WHERE netId = ?", {netId})
+        else
+            local now = os.time()
+            door.lastUnlocked = now
+            exec("UPDATE doors SET locked = 0, lastUnlocked = ? WHERE netId = ?", {now, netId})
+        end
+        print("[Doorgun] Door", netId, "state toggled to", door.locked and "locked" or "unlocked")
+        syncDoorState(netId)
+    end)
 end) 

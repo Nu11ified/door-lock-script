@@ -1,5 +1,7 @@
 -- Door Lock Client Script: Doorgun System
 
+print("[Doorgun] Client script loaded")
+
 local doorgunActive = false
 local doorgunKeyType = nil
 local doorStates = {} -- [netId] = {locked=true/false, keyType="LEO_Key"}
@@ -35,9 +37,10 @@ function DrawText3D(x, y, z, text, r, g, b)
     ClearDrawOrigin()
 end
 
--- Command registration
+-- Command registration for doorgun (admin only)
 for _, keyType in ipairs({"leokey", "safdkey"}) do
     RegisterCommand("doorgun " .. keyType, function()
+        print("[Doorgun] /doorgun " .. keyType .. " command triggered")
         doorgunActive = true
         doorgunKeyType = keyType:upper() .. "_Key"
         giveDoorgun()
@@ -51,7 +54,7 @@ RegisterCommand("doorgunremoval", function()
     TriggerEvent('chat:addMessage', {args = {"Doorgun removal mode enabled. Shoot a door to remove its lock."}})
 end, false)
 
--- Raycast and shoot detection
+-- Raycast and shoot detection for doorgun/door removal
 CreateThread(function()
     while true do
         Wait(0)
@@ -85,6 +88,39 @@ end)
 RegisterNetEvent('doorgun:removeDoorClient')
 AddEventHandler('doorgun:removeDoorClient', function(netId)
     doorStates[netId] = nil
+end)
+
+-- Helper: Check if player is near a door
+local function getNearbyDoor()
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    for netId, data in pairs(doorStates) do
+        local entity = NetworkGetEntityFromNetworkId(netId)
+        if entity and DoesEntityExist(entity) then
+            local coords = GetEntityCoords(entity)
+            if #(playerCoords - coords) < 2.0 then
+                return netId, data, coords
+            end
+        end
+    end
+    return nil, nil, nil
+end
+
+-- Interact with door (press E to lock/unlock if user has key role)
+CreateThread(function()
+    while true do
+        Wait(0)
+        local netId, data, coords = getNearbyDoor()
+        if netId and data and coords then
+            -- Show prompt
+            DrawText3D(coords.x, coords.y, coords.z + 1.0, "Press ~g~E~w~ to " .. (data.locked and "unlock" or "lock") .. " door", 255, 255, 255)
+            -- Check for E press
+            if IsControlJustReleased(0, 38) then -- 38 = E
+                print("[Doorgun] Attempting to toggle door state for netId:", netId)
+                TriggerServerEvent('doorgun:toggleDoor', netId)
+                Wait(1000) -- Prevent spamming
+            end
+        end
+    end
 end)
 
 -- Draw door state text
